@@ -5,5 +5,13 @@
         "enabled": true,
         "username": "admin",
         "password": "password123"
+    },
+    "security": {
+        "max_failed_attempts": 3,
+        "blacklist_duration": 300
+    },
+    "port_pool": {
+        "start": 50000,
+        "end": 60000
     }
 }

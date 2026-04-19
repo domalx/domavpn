@@ -8,5 +8,9 @@
             "username": "admin",
             "password": "password123"
         }
+    },
+    "retry": {
+        "min_delay": 5,
+        "max_delay": 60
     }
 }

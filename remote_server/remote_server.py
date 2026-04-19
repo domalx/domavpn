@@ -8,6 +8,9 @@
 - IP黑名单机制（连续3次认证失败）
 - 自动端口分配和清理
 - 支持多客户端并发连接
+- 日志文件记录
+- 连接统计功能
+- 配置热更新支持
 """
 
 import socket
@@ -22,6 +25,7 @@ from werkzeug.serving import WSGIServer
 
 # 配置加载
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
+LOG_PATH = os.path.join(os.path.dirname(__file__), 'server.log')
 
 def load_config():
     """加载配置文件"""
@@ -34,6 +38,16 @@ def load_config():
             return {}
     return {}
 
+def log_to_file(message):
+    """写入日志文件"""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    log_line = f"[{timestamp}] {message}\n"
+    try:
+        with open(LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(log_line)
+    except Exception as e:
+        print(f"日志写入失败: {e}")
+
 # 全局配置
 config = load_config()
 LISTEN_HOST = config.get('listen_host', '0.0.0.0')
@@ -43,10 +57,10 @@ USERNAME = config.get('auth', {}).get('username', '')
 PASSWORD_HASH = hashlib.sha256(config.get('auth', {}).get('password', '').encode()).hexdigest()
 
 # 安全配置
-MAX_FAILED_ATTEMPTS = 3
-BLACKLIST_DURATION = 300  # 5分钟
-PORT_POOL_START = 50000
-PORT_POOL_END = 60000
+MAX_FAILED_ATTEMPTS = config.get('security', {}).get('max_failed_attempts', 3)
+BLACKLIST_DURATION = config.get('security', {}).get('blacklist_duration', 300)
+PORT_POOL_START = config.get('port_pool', {}).get('start', 50000)
+PORT_POOL_END = config.get('port_pool', {}).get('end', 60000)
 
 # Flask应用
 app = Flask(__name__)
@@ -61,11 +75,23 @@ class ProxyServer:
         self.next_port = PORT_POOL_START
         self.port_lock = threading.Lock()
         self.running = True
+        self.stats = {
+            'total_connections': 0,
+            'successful_auth': 0,
+            'failed_auth': 0,
+            'current_clients': 0,
+            'start_time': time.time()
+        }
         
-        # 启动端口清理线程
+        # 启动清理线程
         cleanup_thread = threading.Thread(target=self._cleanup_expired_ports)
         cleanup_thread.daemon = True
         cleanup_thread.start()
+        
+        # 启动黑名单清理线程
+        blacklist_thread = threading.Thread(target=self._cleanup_blacklist)
+        blacklist_thread.daemon = True
+        blacklist_thread.start()
     
     def _get_client_ip(self):
         """获取客户端真实IP"""
@@ -79,16 +105,6 @@ class ProxyServer:
         """检查IP是否在黑名单中"""
         if ip in self.blacklist:
             return True
-        
-        if ip in self.failed_attempts:
-            attempt = self.failed_attempts[ip]
-            if attempt['count'] >= MAX_FAILED_ATTEMPTS:
-                if time.time() - attempt['last_attempt'] < BLACKLIST_DURATION:
-                    self.blacklist.add(ip)
-                    self._log(f"IP {ip} 已被加入黑名单")
-                    return True
-                else:
-                    self.failed_attempts[ip] = {'count': 0, 'last_attempt': 0}
         return False
     
     def _record_failed_attempt(self, ip):
@@ -98,10 +114,33 @@ class ProxyServer:
         
         self.failed_attempts[ip]['count'] += 1
         self.failed_attempts[ip]['last_attempt'] = time.time()
+        self.stats['failed_auth'] += 1
         
         if self.failed_attempts[ip]['count'] >= MAX_FAILED_ATTEMPTS:
             self.blacklist.add(ip)
-            self._log(f"IP {ip} 连续{MAX_FAILED_ATTEMPTS}次认证失败，已拉黑")
+            log_message = f"IP {ip} 连续{MAX_FAILED_ATTEMPTS}次认证失败，已拉黑"
+            self._log(log_message)
+            log_to_file(log_message)
+    
+    def _cleanup_blacklist(self):
+        """定期清理过期的黑名单"""
+        while self.running:
+            time.sleep(60)
+            now = time.time()
+            expired_ips = []
+            
+            for ip in list(self.blacklist):
+                if ip in self.failed_attempts:
+                    if now - self.failed_attempts[ip]['last_attempt'] >= BLACKLIST_DURATION:
+                        expired_ips.append(ip)
+            
+            for ip in expired_ips:
+                self.blacklist.remove(ip)
+                if ip in self.failed_attempts:
+                    self.failed_attempts[ip] = {'count': 0, 'last_attempt': 0}
+                log_message = f"IP {ip} 已从黑名单移除"
+                self._log(log_message)
+                log_to_file(log_message)
     
     def _verify_credentials(self, username_input, password_input):
         """验证用户名密码"""
@@ -122,6 +161,17 @@ class ProxyServer:
             if self.next_port > PORT_POOL_END:
                 self.next_port = PORT_POOL_START
             return port
+    
+    def _is_port_available(self, port):
+        """检查端口是否可用"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            result = sock.connect_ex(('127.0.0.1', port))
+            sock.close()
+            return result != 0
+        except Exception:
+            return False
     
     def _forward_data(self, source, destination):
         """双向数据转发"""
@@ -156,17 +206,22 @@ class ProxyServer:
             self.proxy_clients[proxy_port] = {
                 'socket': proxy_socket, 
                 'created_at': time.time(),
-                'client_count': 0
+                'client_count': 0,
+                'total_clients': 0
             }
-            self._log(f"代理端口 {proxy_port} 已准备就绪")
+            log_message = f"代理端口 {proxy_port} 已准备就绪"
+            self._log(log_message)
+            log_to_file(log_message)
             
             while self.running:
                 try:
                     client_conn, client_addr = proxy_socket.accept()
+                    client_conn.settimeout(60)
                     self.proxy_clients[proxy_port]['client_count'] += 1
-                    self._log(f"用户连接到端口 {proxy_port}: {client_addr}")
+                    self.proxy_clients[proxy_port]['total_clients'] += 1
+                    self.stats['total_connections'] += 1
+                    self.stats['current_clients'] += 1
                     
-                    # 启动新线程处理客户端
                     client_thread = threading.Thread(
                         target=self._handle_single_client,
                         args=(client_conn, proxy_port, client_addr)
@@ -176,14 +231,18 @@ class ProxyServer:
                     
                 except socket.timeout:
                     if time.time() - self.proxy_clients[proxy_port]['created_at'] > 300:
-                        self._log(f"代理端口 {proxy_port} 超时关闭")
+                        log_message = f"代理端口 {proxy_port} 超时关闭"
+                        self._log(log_message)
+                        log_to_file(log_message)
                         break
                 except Exception as e:
                     self._log(f"端口 {proxy_port} 接受连接异常: {e}")
                     break
         
         except Exception as e:
-            self._log(f"创建代理端口 {proxy_port} 失败: {e}")
+            log_message = f"创建代理端口 {proxy_port} 失败: {e}"
+            self._log(log_message)
+            log_to_file(log_message)
         finally:
             if proxy_port in self.proxy_clients:
                 try:
@@ -191,16 +250,16 @@ class ProxyServer:
                 except:
                     pass
                 del self.proxy_clients[proxy_port]
-                self._log(f"代理端口 {proxy_port} 已释放")
+                log_message = f"代理端口 {proxy_port} 已释放"
+                self._log(log_message)
+                log_to_file(log_message)
     
     def _handle_single_client(self, client_conn, proxy_port, client_addr):
         """处理单个客户端连接"""
         try:
-            # 连接内网服务
             local_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             local_socket.connect(('127.0.0.1', 5000))
             
-            # 启动双向转发
             forward_thread = threading.Thread(
                 target=self._forward_data,
                 args=(client_conn, local_socket)
@@ -218,6 +277,7 @@ class ProxyServer:
         finally:
             if proxy_port in self.proxy_clients:
                 self.proxy_clients[proxy_port]['client_count'] -= 1
+            self.stats['current_clients'] -= 1
     
     def _cleanup_expired_ports(self):
         """定期清理过期的代理端口"""
@@ -236,7 +296,9 @@ class ProxyServer:
                 except:
                     pass
                 del self.proxy_clients[port]
-                self._log(f"端口 {port} 已过期并释放")
+                log_message = f"端口 {port} 已过期并释放"
+                self._log(log_message)
+                log_to_file(log_message)
     
     def _log(self, message):
         """日志记录"""
@@ -247,14 +309,12 @@ class ProxyServer:
         """认证接口处理"""
         client_ip = self._get_client_ip()
         
-        # 检查黑名单
         if self._is_blacklisted(client_ip):
             return jsonify({
                 'status': 'error', 
                 'message': 'IP已被拉黑，请5分钟后重试'
             }), 403
         
-        # 解析请求数据
         try:
             data = request.get_json()
         except Exception as e:
@@ -265,14 +325,15 @@ class ProxyServer:
             self._record_failed_attempt(client_ip)
             return jsonify({'status': 'error', 'message': '缺少认证信息'}), 400
         
-        # 验证凭证
         if self._verify_credentials(data['username'], data['password']):
-            # 重置失败计数
             if client_ip in self.failed_attempts:
                 self.failed_attempts[client_ip] = {'count': 0, 'last_attempt': 0}
             
-            # 分配端口并启动代理
             proxy_port = self._get_random_port()
+            
+            while not self._is_port_available(proxy_port):
+                proxy_port = self._get_random_port()
+            
             proxy_thread = threading.Thread(
                 target=self._handle_proxy_client,
                 args=(proxy_port,)
@@ -280,10 +341,12 @@ class ProxyServer:
             proxy_thread.daemon = True
             proxy_thread.start()
             
-            # 等待端口绑定完成
             time.sleep(0.1)
             
-            self._log(f"认证成功 - IP: {client_ip}, 端口: {proxy_port}")
+            self.stats['successful_auth'] += 1
+            log_message = f"认证成功 - IP: {client_ip}, 端口: {proxy_port}"
+            self._log(log_message)
+            log_to_file(log_message)
             
             return jsonify({
                 'status': 'success',
@@ -302,18 +365,29 @@ class ProxyServer:
     
     def health_handler(self):
         """健康检查接口"""
+        uptime = int(time.time() - self.stats['start_time'])
         return jsonify({
             'status': 'running',
             'auth_enabled': AUTH_ENABLED,
             'active_proxies': len(self.proxy_clients),
-            'blacklist_count': len(self.blacklist)
+            'blacklist_count': len(self.blacklist),
+            'stats': {
+                'total_connections': self.stats['total_connections'],
+                'successful_auth': self.stats['successful_auth'],
+                'failed_auth': self.stats['failed_auth'],
+                'current_clients': self.stats['current_clients'],
+                'uptime_seconds': uptime,
+                'uptime_human': f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s"
+            }
         })
     
     def blacklist_handler(self):
         """获取黑名单信息"""
         return jsonify({
             'blacklist': list(self.blacklist),
-            'failed_attempts': dict(self.failed_attempts)
+            'failed_attempts': dict(self.failed_attempts),
+            'max_failed_attempts': MAX_FAILED_ATTEMPTS,
+            'blacklist_duration': BLACKLIST_DURATION
         })
     
     def remove_blacklist_handler(self, ip):
@@ -322,14 +396,53 @@ class ProxyServer:
             self.blacklist.remove(ip)
             if ip in self.failed_attempts:
                 self.failed_attempts[ip] = {'count': 0, 'last_attempt': 0}
-            self._log(f"IP {ip} 已从黑名单移除")
+            log_message = f"IP {ip} 已从黑名单移除"
+            self._log(log_message)
+            log_to_file(log_message)
             return jsonify({'status': 'success', 'message': f'IP {ip} 已移除'}), 200
         return jsonify({'status': 'error', 'message': 'IP不在黑名单中'}), 404
+    
+    def proxies_handler(self):
+        """获取代理端口列表"""
+        proxies_info = []
+        for port, info in self.proxy_clients.items():
+            proxies_info.append({
+                'port': port,
+                'created_at': datetime.fromtimestamp(info['created_at']).strftime('%Y-%m-%d %H:%M:%S'),
+                'client_count': info['client_count'],
+                'total_clients': info['total_clients']
+            })
+        return jsonify({
+            'proxies': proxies_info,
+            'total': len(proxies_info)
+        })
+    
+    def reload_config_handler(self):
+        """热更新配置"""
+        global config, LISTEN_HOST, LISTEN_PORT, AUTH_ENABLED, USERNAME, PASSWORD_HASH
+        global MAX_FAILED_ATTEMPTS, BLACKLIST_DURATION, PORT_POOL_START, PORT_POOL_END
+        
+        try:
+            config = load_config()
+            LISTEN_HOST = config.get('listen_host', '0.0.0.0')
+            AUTH_ENABLED = config.get('auth', {}).get('enabled', False)
+            USERNAME = config.get('auth', {}).get('username', '')
+            PASSWORD_HASH = hashlib.sha256(config.get('auth', {}).get('password', '').encode()).hexdigest()
+            MAX_FAILED_ATTEMPTS = config.get('security', {}).get('max_failed_attempts', 3)
+            BLACKLIST_DURATION = config.get('security', {}).get('blacklist_duration', 300)
+            PORT_POOL_START = config.get('port_pool', {}).get('start', 50000)
+            PORT_POOL_END = config.get('port_pool', {}).get('end', 60000)
+            
+            log_message = "配置已热更新"
+            self._log(log_message)
+            log_to_file(log_message)
+            
+            return jsonify({'status': 'success', 'message': '配置已更新'}), 200
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': f'配置更新失败: {e}'}), 500
 
-# 创建代理服务器实例
 proxy_server = ProxyServer()
 
-# API路由
 @app.route('/api/auth', methods=['POST'])
 def auth():
     return proxy_server.auth_handler()
@@ -346,16 +459,28 @@ def blacklist():
 def remove_blacklist(ip):
     return proxy_server.remove_blacklist_handler(ip)
 
+@app.route('/api/proxies', methods=['GET'])
+def proxies():
+    return proxy_server.proxies_handler()
+
+@app.route('/api/reload', methods=['POST'])
+def reload_config():
+    return proxy_server.reload_config_handler()
+
 if __name__ == '__main__':
-    proxy_server._log(f"启动成功，监听端口: {LISTEN_PORT}")
+    log_message = f"启动成功，监听端口: {LISTEN_PORT}"
+    proxy_server._log(log_message)
+    log_to_file(log_message)
+    
     proxy_server._log(f"认证功能: {'已启用' if AUTH_ENABLED else '已禁用'}")
     proxy_server._log(f"公网访问地址: http://<server-ip>:{LISTEN_PORT}")
     proxy_server._log("按 Ctrl+C 停止服务")
     
     try:
-        # 使用Werkzeug的WSGIServer
         server = WSGIServer((LISTEN_HOST, LISTEN_PORT), app)
         server.serve_forever()
     except KeyboardInterrupt:
         proxy_server.running = False
-        proxy_server._log("收到停止信号，正在关闭...")
+        log_message = "收到停止信号，正在关闭..."
+        proxy_server._log(log_message)
+        log_to_file(log_message)
