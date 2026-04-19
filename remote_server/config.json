@@ -1,0 +1,9 @@
+{
+    "listen_host": "0.0.0.0",
+    "listen_port": 8871,
+    "auth": {
+        "enabled": true,
+        "username": "admin",
+        "password": "password123"
+    }
+}
