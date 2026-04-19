@@ -14,6 +14,8 @@
 - **HTTP访问**：用户通过HTTP方式访问代理地址和端口
 - **JSON配置**：支持通过配置文件灵活设置端口地址信息
 - **跨平台**：纯Python实现，支持Windows、Linux、macOS
+- **配置工具**：提供工具脚本管理用户名密码配置
+- **虚拟环境**：支持venv虚拟环境运行
 
 ## 实现原理
 
@@ -69,13 +71,19 @@ password_hash = hashlib.sha256(password.encode()).hexdigest()
 ```
 domavpn/
 ├── README.md                      # 项目文档
+├── requirements.txt               # 依赖文件
+├── start_remote.py                # 远程服务器启动脚本
+├── start_local.py                 # 内网服务启动脚本
 ├── test.txt                       # 测试文件
+├── venv/                          # Python虚拟环境
 ├── local_server/
 │   ├── local_server.py            # 内网HTTP服务
 │   └── config.json                # 内网服务配置
-└── remote_server/
-    ├── remote_server.py           # 远程代理服务器
-    └── config.json                # 远程服务器配置
+├── remote_server/
+│   ├── remote_server.py           # 远程代理服务器
+│   └── config.json                # 远程服务器配置
+└── tool/
+    └── config_tool.py             # 配置管理工具
 ```
 
 ## 配置说明
@@ -127,12 +135,38 @@ domavpn/
 
 ## 使用方法
 
-### 启动服务
-
-#### 1. 启动远程代理服务器
+### 环境准备
 
 ```bash
-cd domavpn
+# 创建虚拟环境（首次运行）
+python -m venv venv
+
+# 激活虚拟环境
+# Windows
+venv\Scripts\activate
+# Linux/macOS
+source venv/bin/activate
+
+# 安装依赖
+pip install -r requirements.txt
+```
+
+### 快速启动
+
+#### 方式一：使用启动脚本（推荐）
+
+```bash
+# 启动远程代理服务器
+python start_remote.py
+
+# 启动内网HTTP服务
+python start_local.py
+```
+
+#### 方式二：直接启动
+
+```bash
+# 启动远程代理服务器
 python remote_server/remote_server.py
 ```
 
@@ -217,6 +251,27 @@ curl http://localhost:50000/test.txt
 | /list | GET | 列出文件 |
 | /<filename> | GET | 获取文件内容 |
 | /api/status | GET | 获取服务状态 |
+
+### 配置管理工具
+
+项目提供了配置管理工具，用于修改用户名密码：
+
+```bash
+# 显示帮助信息
+python tool/config_tool.py --help
+
+# 显示当前配置
+python tool/config_tool.py show
+
+# 设置远程服务器用户名密码（命令行方式）
+python tool/config_tool.py remote --username admin --password newpassword
+
+# 设置内网服务用户名密码（交互式方式）
+python tool/config_tool.py local --interactive
+
+# 启用/禁用远程服务器认证
+python tool/config_tool.py remote --enabled true
+```
 
 ## 服务角色说明
 
