@@ -20,7 +20,7 @@ import threading
 import time
 import requests
 from datetime import datetime
-from flask import Flask, request, jsonify, send_from_directory, redirect, url_for
+from flask import Flask, request, jsonify, send_from_directory, redirect, url_for, render_template
 
 # 配置加载
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -59,7 +59,9 @@ MAX_RETRY_DELAY = config.get('retry', {}).get('max_delay', 60)
 MIN_RETRY_DELAY = config.get('retry', {}).get('min_delay', 5)
 
 # Flask应用
-app = Flask(__name__)
+app = Flask(__name__, 
+            template_folder='../frontend/templates',
+            static_folder='../frontend/static')
 
 class LocalServer:
     """内网服务核心类"""
@@ -221,45 +223,16 @@ local_server = LocalServer()
 @app.route('/')
 def index():
     """首页"""
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>内网文件服务</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            h1 { color: #333; }
-            ul { list-style-type: none; padding: 0; }
-            li { margin: 10px 0; }
-            a { color: #0066cc; text-decoration: none; }
-            a:hover { text-decoration: underline; }
-            .status { padding: 10px; margin: 20px 0; border-radius: 5px; }
-            .status.online { background-color: #e8f5e9; color: #2e7d32; }
-            .status.offline { background-color: #ffebee; color: #c62828; }
-        </style>
-    </head>
-    <body>
-        <h1>内网HTTP服务 - 文件访问</h1>
-        <div class="status {}">
-            代理状态: {} | 端口: {}
-        </div>
-        <p>当前目录: /</p>
-        <ul>
-            <li><a href="/list">列出文件</a></li>
-            <li><a href="/upload">上传文件</a></li>
-            <li><a href="/api/status">查看服务状态</a></li>
-        </ul>
-    </body>
-    </html>
-    """.format(
-        'online' if local_server.connected else 'offline',
-        '已连接' if local_server.connected else '未连接',
-        local_server.proxy_port or 'N/A'
-    )
+    return render_template('local_index.html')
 
 @app.route('/list')
 def list_files():
     """列出当前目录文件"""
+    return render_template('local_files.html')
+
+@app.route('/api/files')
+def api_list_files():
+    """列出当前目录文件 (API)"""
     try:
         files = []
         base_path = '.'
@@ -323,30 +296,7 @@ def upload_file():
                 'filename': file.filename
             }), 200
     
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>文件上传</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            h1 { color: #333; }
-            form { margin: 20px 0; }
-            input[type="file"] { margin: 10px 0; }
-            button { padding: 10px 20px; background-color: #0066cc; color: white; border: none; border-radius: 5px; }
-        </style>
-    </head>
-    <body>
-        <h1>文件上传</h1>
-        <form method="post" enctype="multipart/form-data">
-            <input type="file" name="file">
-            <br>
-            <button type="submit">上传</button>
-        </form>
-        <p><a href="/">返回首页</a></p>
-    </body>
-    </html>
-    """
+    return render_template('local_upload.html')
 
 @app.route('/api/status')
 def status():
@@ -390,6 +340,56 @@ def reload_config():
         return jsonify({'status': 'success', 'message': '配置已更新'}), 200
     except Exception as e:
         return jsonify({'status': 'error', 'message': f'配置更新失败: {e}'}), 500
+
+@app.route('/api/delete', methods=['POST'])
+def delete_file():
+    """删除文件"""
+    try:
+        data = request.get_json()
+        if not data or 'filename' not in data:
+            return jsonify({'error': '缺少文件名参数'}), 400
+        
+        filename = data['filename']
+        if not os.path.exists(filename):
+            return jsonify({'error': '文件不存在'}), 404
+        
+        if os.path.isdir(filename):
+            return jsonify({'error': '不能删除目录'}), 400
+        
+        os.remove(filename)
+        log_message = f"文件已删除: {filename}"
+        local_server._log(log_message)
+        log_to_file(log_message)
+        
+        return jsonify({'status': 'success', 'message': f'文件 {filename} 已删除'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/rename', methods=['POST'])
+def rename_file():
+    """重命名文件"""
+    try:
+        data = request.get_json()
+        if not data or 'oldname' not in data or 'newname' not in data:
+            return jsonify({'error': '缺少参数'}), 400
+        
+        oldname = data['oldname']
+        newname = data['newname']
+        
+        if not os.path.exists(oldname):
+            return jsonify({'error': '原文件不存在'}), 404
+        
+        if os.path.exists(newname):
+            return jsonify({'error': '新文件名已存在'}), 400
+        
+        os.rename(oldname, newname)
+        log_message = f"文件已重命名: {oldname} -> {newname}"
+        local_server._log(log_message)
+        log_to_file(log_message)
+        
+        return jsonify({'status': 'success', 'message': f'文件已重命名为 {newname}'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     log_message = f"配置信息 - 远程服务器: {REMOTE_HOST}:{REMOTE_PORT}, 用户名: {USERNAME}"

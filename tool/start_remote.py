@@ -9,11 +9,14 @@ import os
 
 def main():
     # 检查虚拟环境
-    venv_python = os.path.join(os.path.dirname(__file__), 'venv', 'Scripts', 'python.exe')
+    if sys.platform == 'win32':
+        venv_python = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'venv', 'Scripts', 'python.exe')
+    else:
+        venv_python = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'venv', 'bin', 'python')
     
     if not os.path.exists(venv_python):
         print("虚拟环境不存在，正在创建...")
-        subprocess.run([sys.executable, '-m', 'venv', 'venv'], check=True)
+        subprocess.run([sys.executable, '-m', 'venv', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'venv')], check=True)
         
     # 安装依赖
     print("检查依赖...")

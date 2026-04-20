@@ -21,7 +21,7 @@ import hashlib
 import time
 from datetime import datetime
 from flask import Flask, request, jsonify
-from werkzeug.serving import WSGIServer
+
 
 # 配置加载
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -366,6 +366,12 @@ class ProxyServer:
     def health_handler(self):
         """健康检查接口"""
         uptime = int(time.time() - self.stats['start_time'])
+        # 计算平均响应时间
+        if self.stats['response_times']:
+            avg_response_time = sum(self.stats['response_times']) / len(self.stats['response_times'])
+        else:
+            avg_response_time = 0
+        
         return jsonify({
             'status': 'running',
             'auth_enabled': AUTH_ENABLED,
@@ -376,6 +382,9 @@ class ProxyServer:
                 'successful_auth': self.stats['successful_auth'],
                 'failed_auth': self.stats['failed_auth'],
                 'current_clients': self.stats['current_clients'],
+                'total_data_sent': self.stats['total_data_sent'],
+                'total_data_received': self.stats['total_data_received'],
+                'avg_response_time': round(avg_response_time, 3),
                 'uptime_seconds': uptime,
                 'uptime_human': f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s"
             }
@@ -477,8 +486,7 @@ if __name__ == '__main__':
     proxy_server._log("按 Ctrl+C 停止服务")
     
     try:
-        server = WSGIServer((LISTEN_HOST, LISTEN_PORT), app)
-        server.serve_forever()
+        app.run(host=LISTEN_HOST, port=LISTEN_PORT, debug=False, threaded=True)
     except KeyboardInterrupt:
         proxy_server.running = False
         log_message = "收到停止信号，正在关闭..."
