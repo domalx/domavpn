@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>内网文件服务</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            margin-bottom: 10px;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            background: rgba(255,255,255,0.2);
+            font-size: 14px;
+        }
+        .status.online {
+            background: #4CAF50;
+        }
+        .status.offline {
+            background: #f44336;
+        }
+        .info-bar {
+            background: #1a1a2e;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .info-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #eee;
+            font-size: 14px;
+        }
+        .info-label {
+            font-weight: bold;
+            color: #888;
+        }
+        .info-value {
+            background: #2d2d44;
+            padding: 5px 12px;
+            border-radius: 5px;
+            font-family: monospace;
+            color: #4CAF50;
+        }
+        .copy-btn {
+            background: #4CAF50;
+            border: none;
+            color: white;
+            padding: 5px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+        .copy-btn:hover {
+            background: #45a049;
+        }
+        .content {
+            padding: 30px;
+        }
+        .section {
+            margin-bottom: 30px;
+        }
+        .section-title {
+            font-size: 18px;
+            color: #333;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+        .dir-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        .dir-card {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 20px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .dir-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            border-color: #667eea;
+        }
+        .dir-card h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        .dir-card p {
+            color: #666;
+            font-size: 14px;
+            word-break: break-all;
+        }
+        .file-list {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+        }
+        .file-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .file-item:last-child {
+            border-bottom: none;
+        }
+        .file-icon {
+            font-size: 24px;
+            margin-right: 15px;
+        }
+        .file-info {
+            flex: 1;
+        }
+        .file-name {
+            font-weight: bold;
+            color: #333;
+            word-break: break-all;
+        }
+        .file-meta {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+        .file-size {
+            color: #666;
+            font-size: 14px;
+            margin-left: 15px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        .empty-state .icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+        .back-btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border-radius: 5px;
+            text-decoration: none;
+            margin-bottom: 20px;
+        }
+        .back-btn:hover {
+            background: #764ba2;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📁 内网文件服务</h1>
+            <div class="status {% if connected %}online{% else %}offline{% endif %}">
+                {% if connected %}已连接到代理服务器{% else %}未连接{% endif %}
+            </div>
+        </div>
+        <div class="info-bar">
+            <div class="info-item">
+                <span class="info-label">Token:</span>
+                <span class="info-value" id="tokenDisplay">{{ token|default('') }}</span>
+                {% if token %}
+                <button class="copy-btn" onclick="copyToken()">复制</button>
+                {% endif %}
+            </div>
+            <div class="info-item">
+                <span class="info-label">远程代理:</span>
+                <span class="info-value">{{ remote_host|default('127.0.0.1:8872') }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">代理端口:</span>
+                <span class="info-value">{{ proxy_port|default('-') }}</span>
+            </div>
+        </div>
+        <div class="content">
+            <div class="section">
+                <div class="section-title">📂 共享目录列表</div>
+                <div class="dir-list" id="dirList">
+                    <div class="loading">加载中...</div>
+                </div>
+            </div>
+
+            <div class="section" id="fileSection" style="display: none;">
+                <a href="#" class="back-btn" onclick="showDirList(); return false;">← 返回目录列表</a>
+                <div class="section-title" id="currentDirTitle">📁 当前目录</div>
+                <div class="file-list" id="fileList">
+                    <div class="loading">加载中...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentDirId = null;
+        let globalToken = "{{ token|default('') }}";
+
+        function copyToken() {
+            if (globalToken) {
+                navigator.clipboard.writeText(globalToken);
+            }
+        }
+
+        function loadDirs() {
+            fetch('/api/dirs')
+                .then(response => response.json())
+                .then(data => {
+                    const dirList = document.getElementById('dirList');
+                    if (data.dirs && data.dirs.length > 0) {
+                        dirList.innerHTML = data.dirs.map(dir => `
+                            <div class="dir-card" onclick="loadFiles('${dir.id}', '${dir.name}')">
+                                <h3>📁 ${dir.name}</h3>
+                                <p>${dir.path}</p>
+                            </div>
+                        `).join('');
+                    } else {
+                        dirList.innerHTML = '<div class="empty-state"><div class="icon">📂</div>暂无共享目录</div>';
+                    }
+                })
+                .catch(error => {
+                    console.error('加载目录失败:', error);
+                    document.getElementById('dirList').innerHTML = '<div class="empty-state">加载失败</div>';
+                });
+        }
+
+        function loadFiles(dirId, dirName) {
+            currentDirId = dirId;
+            document.getElementById('dirList').parentElement.style.display = 'none';
+            document.getElementById('fileSection').style.display = 'block';
+            document.getElementById('currentDirTitle').textContent = `📁 ${dirName}`;
+
+            fetch(`/api/list?dir=${dirId}`)
+                .then(response => response.json())
+                .then(data => {
+                    const fileList = document.getElementById('fileList');
+                    if (data.files && data.files.length > 0) {
+                        fileList.innerHTML = data.files.map(file => `
+                            <div class="file-item">
+                                <div class="file-icon">${file.type === 'directory' ? '📁' : '📄'}</div>
+                                <div class="file-info">
+                                    <div class="file-name">${file.name}</div>
+                                    <div class="file-meta">修改时间: ${file.mtime}</div>
+                                </div>
+                                ${file.type === 'file' ? `<div class="file-size">${formatSize(file.size)}</div>` : ''}
+                            </div>
+                        `).join('');
+                    } else {
+                        fileList.innerHTML = '<div class="empty-state"><div class="icon">📄</div>目录为空</div>';
+                    }
+                })
+                .catch(error => {
+                    console.error('加载文件失败:', error);
+                    document.getElementById('fileList').innerHTML = '<div class="empty-state">加载失败</div>';
+                });
+        }
+
+        function showDirList() {
+            currentDirId = null;
+            document.getElementById('fileSection').style.display = 'none';
+            document.getElementById('dirList').parentElement.style.display = 'block';
+            loadDirs();
+        }
+
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        loadDirs();
+    </script>
+</body>
+</html>

@@ -7,12 +7,19 @@
 - **Flask框架**：稳定可靠的HTTP服务
 - **自动连接**：内网服务自动连接远程服务器
 - **随机端口分配**：动态分配代理端口（50000-60000）
+- **Token访问机制**：内网服务连接时分配Token，用户可通过Token访问对应内网服务
 - **安全认证**：用户名密码认证（SHA256加密）
 - **IP黑名单**：连续N次认证失败自动拉黑（默认3次，5分钟）
 - **跨平台**：支持Windows/Linux/macOS
 - **连接统计**：实时统计连接数、认证次数等
 - **配置热更新**：无需重启即可更新配置
 - **自动重连**：指数退避策略自动重新连接
+- **Token持久化**：Token自动保存到本地配置文件
+
+服务流程
+1、启动远程代理服务器，代理服务分类为两部分，8871端口用于内网服务连接，8872端口用于用户连接，用户输入token后，访问关联内网服务
+2、启动内网HTTP服务，自动连接远程服务器
+3、内网服务启动后会输出Token，用户访问8872端口，可通过Token访问对应内网服务
 
 ## 项目结构
 
@@ -63,11 +70,35 @@ python tool/start_local.py
 
 ### 访问服务
 
-内网服务启动后会输出代理端口，例如：
+内网服务启动后会输出代理端口和Token，例如：
 ```
 代理访问地址: http://<server-ip>:50000
 本地访问地址: http://localhost:5000
+Token: abcdef123456...
 ```
+
+#### Token访问方式
+
+1. **通过Web界面查看Token**：访问内网服务的首页 `http://localhost:5000`，Token信息会显示在页面上
+
+2. **通过API验证Token**：
+   ```bash
+   # 查询Token信息
+   curl http://<remote-server>:8871/api/token/<token>
+   
+   # 通过Token访问代理服务
+   curl http://<remote-server>:8871/api/access?token=<token>
+   ```
+
+3. **Token验证响应示例**：
+   ```json
+   {
+     "status": "success",
+     "proxy_port": 50000,
+     "proxy_url": "http://0.0.0.0:50000",
+     "message": "Token验证成功"
+   }
+   ```
 
 ### 配置管理
 

@@ -12,5 +12,8 @@
     "retry": {
         "min_delay": 5,
         "max_delay": 60
-    }
+    },
+    "token": "GGsEsWqQa5w9cWMXitm1PZWUYJMDeVOi",
+    "proxy_port": 50000,
+    "token_updated_at": "2026-04-21 18:28:20"
 }
