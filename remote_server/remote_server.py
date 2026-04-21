@@ -184,15 +184,23 @@ class ProxyServer:
                                 self._log(f"[转发] 对方关闭连接")
                                 return
                             if data == b'HEARTBEAT':
-                                self._log(f"[转发] 忽略心跳信号")
                                 continue
                             self._log(f"[转发] {src.getpeername()} -> {dst.getpeername()}, {len(data)} bytes: {data[:50]}")
                             dst.sendall(data)
-                        except Exception as e:
-                            self._log(f"[转发] 读写异常: {e}")
+                        except (OSError, socket.error) as e:
+                            if e.winerror == 10038:
+                                self._log(f"[转发] 套接字已无效，连接可能已关闭")
+                            else:
+                                self._log(f"[转发] 读写异常: {e}")
                             return
-                except select.error as e:
-                    self._log(f"[转发] select错误: {e}")
+                except (select.error, OSError, socket.error) as e:
+                    if getattr(e, 'winerror', None) == 10038:
+                        self._log(f"[转发] select套接字已无效")
+                    else:
+                        self._log(f"[转发] select错误: {e}")
+                    break
+                except Exception as e:
+                    self._log(f"[转发] 未知异常: {e}")
                     break
         except Exception as e:
             self._log(f"[转发] 异常: {e}")
@@ -361,39 +369,6 @@ class ProxyServer:
                 if self.running:
                     self._log(f"代理端口 {proxy_port} 接受用户连接异常: {e}")
                 break
-
-    def _heartbeat_receiver(self, proxy_port, local_conn):
-        """接收心跳信号并保持长连接活跃"""
-        try:
-            local_conn.settimeout(30)
-            while self.running and self.proxy_clients.get(proxy_port, {}).get('local_conn') == local_conn:
-                try:
-                    data = local_conn.recv(1024)
-                    if not data:
-                        self._log(f"代理端口 {proxy_port} 内网服务连接已关闭")
-                        break
-
-                    if proxy_port in self.proxy_clients:
-                        self.proxy_clients[proxy_port]['last_heartbeat'] = time.time()
-
-                    if data == b'HEARTBEAT':
-                        continue
-
-                except socket.timeout:
-                    if proxy_port in self.proxy_clients:
-                        last_hb = self.proxy_clients[proxy_port].get('last_heartbeat', 0)
-                        if time.time() - last_hb > 60:
-                            self._log(f"代理端口 {proxy_port} 心跳超时")
-                            break
-                    continue
-                except Exception as e:
-                    self._log(f"代理端口 {proxy_port} 接收异常: {e}")
-                    break
-        except Exception as e:
-            self._log(f"代理端口 {proxy_port} 心跳线程异常: {e}")
-        finally:
-            if proxy_port in self.proxy_clients:
-                self.proxy_clients[proxy_port]['local_conn'] = None
 
     def _cleanup_expired_ports(self):
         """定期清理过期的代理端口"""

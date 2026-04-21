@@ -79,6 +79,8 @@ class LocalServer:
         }
         self.long_conn = None
         self.heartbeat_thread = None
+        self.proxy_thread = None
+        self.conn_lock = threading.Lock()
 
     def _log(self, message):
         """日志记录"""
@@ -153,7 +155,8 @@ class LocalServer:
                         self._log(f"代理访问地址: http://{REMOTE_HOST}:{self.proxy_port}")
                         self._log(f"本地访问地址: http://{LOCAL_HOST}:{LOCAL_PORT}")
 
-                        # 启动心跳线程
+                        # 启动本地代理和心跳线程
+                        self._start_local_proxy()
                         self._start_heartbeat()
 
                     elif response.status_code == 408:
@@ -198,24 +201,79 @@ class LocalServer:
                             pass
                         self.long_conn = None
 
+    def _start_local_proxy(self):
+        """启动本地代理，将远程请求转发到本地Flask服务"""
+        def local_proxy_loop():
+            while self.running and self.connected:
+                local_socket = None
+                try:
+                    local_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    local_socket.settimeout(5)
+                    local_socket.connect(('127.0.0.1', LOCAL_PORT))
+                    local_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+                    self._log("本地代理已连接到Flask服务")
+
+                    while self.running and self.connected:
+                        try:
+                            with self.conn_lock:
+                                if not self.long_conn:
+                                    break
+                                data = self.long_conn.recv(8192)
+                            if not data:
+                                self._log("远程连接已关闭")
+                                break
+                            if data == b'HEARTBEAT':
+                                continue
+                            local_socket.sendall(data)
+
+                            local_socket.settimeout(5)
+                            try:
+                                response = local_socket.recv(8192)
+                                if response:
+                                    with self.conn_lock:
+                                        if self.long_conn:
+                                            self.long_conn.sendall(response)
+                            except socket.timeout:
+                                pass
+                        except Exception as e:
+                            self._log(f"本地代理转发异常: {e}")
+                            break
+                except Exception as e:
+                    if self.running and self.connected:
+                        self._log(f"本地代理连接Flask失败: {e}")
+                        time.sleep(1)
+                finally:
+                    if local_socket:
+                        try:
+                            local_socket.close()
+                        except:
+                            pass
+
+        self.proxy_thread = threading.Thread(target=local_proxy_loop, daemon=True)
+        self.proxy_thread.start()
+
     def _start_heartbeat(self):
         """启动心跳保活机制"""
         def heartbeat_loop():
             while self.running and self.connected:
                 time.sleep(30)
-                if self.connected and self.long_conn:
+                if self.connected:
                     try:
-                        self.long_conn.sendall(b'HEARTBEAT')
+                        with self.conn_lock:
+                            if self.long_conn:
+                                self.long_conn.sendall(b'HEARTBEAT')
                         self._log("心跳发送成功")
                     except Exception as e:
                         self._log(f"心跳发送失败: {e}")
-                        self.connected = False
-                        if self.long_conn:
-                            try:
-                                self.long_conn.close()
-                            except:
-                                pass
-                            self.long_conn = None
+                        with self.conn_lock:
+                            self.connected = False
+                            if self.long_conn:
+                                try:
+                                    self.long_conn.close()
+                                except:
+                                    pass
+                                self.long_conn = None
                         break
 
         self.heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
